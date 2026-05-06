@@ -98,46 +98,78 @@ def overlay_png(background, sprite, x, y, scale=1.0, alpha_mul=1.0):
 # PART 3: Effect Classes
 # ==========================================
 
+class Sparkle:
+    """อนุภาควิงซ์ๆ ระยิบระยับ"""
+    def __init__(self, x, y):
+        self.x = x + random.randint(-5, 5)
+        self.y = y + random.randint(-5, 5)
+        self.size = random.uniform(1, 3)
+        self.color = (random.randint(200, 255), random.randint(200, 255), 255) # สีขาว-ฟ้าสว่าง
+        self.life = 1.0  # อายุขัย
+        self.vx = random.uniform(-1, 1)
+        self.vy = random.uniform(-1, 1)
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.life -= 0.05 # หายไปใน 20 เฟรม
+
+    def draw(self, frame):
+        alpha = self.life
+        s = int(self.size * alpha * 2)
+        if s > 0:
+            # วาดเป็นรูปกากบาทเล็กๆ ให้ดูวิงซ์
+            cv2.line(frame, (int(self.x-s), int(self.y)), (int(self.x+s), int(self.y)), self.color, 1)
+            cv2.line(frame, (int(self.x), int(self.y-s)), (int(self.x), int(self.y+s)), self.color, 1)
+
 class WandTrail:
-    """Glow trail ตามปลายไม้ — วาดด้วย code ไม่ต้องใช้ sprite"""
+    """Glow trail + วิ้งค์ระยิบระยับ"""
     def __init__(self):
         self.trail = deque(maxlen=45)
+        self.sparkles = [] # เก็บรายการวิงซ์ๆ
 
     def update(self, px, py):
+        # อัพเดท Trail หลัก
         for p in self.trail:
             p['life'] -= 0.035
         while self.trail and self.trail[0]['life'] <= 0:
             self.trail.popleft()
+        
         if px is not None:
             self.trail.append({'x': px, 'y': py, 'life': 1.0})
+            # สุ่มสร้างวิงซ์ๆ ออกมาเมื่อขยับไม้
+            if random.random() > 0.3: # ไม่ต้องออกทุกเฟรมเดี๋ยวรก
+                self.sparkles.append(Sparkle(px, py))
+
+        # อัพเดทวิงซ์ๆ
+        for s in self.sparkles:
+            s.update()
+        self.sparkles = [s for s in self.sparkles if s.life > 0]
 
     def draw(self, frame):
+        # 1. วาดเส้น Trail (เหมือนเดิม)
         pts_list = list(self.trail)
-        if len(pts_list) < 2:
-            return frame
-        overlay = frame.copy()
-        for i in range(1, len(pts_list)):
-            p  = pts_list[i]
-            pp = pts_list[i - 1]
-            if p['life'] <= 0:
-                continue
-            alpha = p['life']
-            b = int(255)
-            g = int(60  * alpha)
-            r = int(120 + 135 * (1 - alpha))
-            color = (b, g, r)
-            thickness = max(1, int(alpha * 7))
-            cv2.line(overlay, (pp['x'], pp['y']), (p['x'], p['y']),
-                     color, thickness, cv2.LINE_AA)
-        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+        if len(pts_list) >= 2:
+            overlay = frame.copy()
+            for i in range(1, len(pts_list)):
+                p, pp = pts_list[i], pts_list[i-1]
+                alpha = p['life']
+                color = (255, int(150 * alpha), 200) # ปรับสีให้ชมพู-ม่วงสว่างขึ้น
+                cv2.line(overlay, (pp['x'], pp['y']), (p['x'], p['y']), color, max(1, int(alpha * 5)), cv2.LINE_AA)
+            cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+        # 2. วาดวิงซ์ๆ (Sparkles)
+        for s in self.sparkles:
+            s.draw(frame)
+
+        # 3. วาดหัวไม้กายสิทธิ์ (Glow)
         if pts_list:
             head = pts_list[-1]
             if head['life'] > 0.5:
-                for radius, alpha_layer in [(14, 0.18), (9, 0.35), (5, 0.7)]:
-                    glow = frame.copy()
-                    cv2.circle(glow, (head['x'], head['y']), radius, (255, 80, 220), -1, cv2.LINE_AA)
-                    cv2.addWeighted(glow, alpha_layer, frame, 1 - alpha_layer, 0, frame)
-                cv2.circle(frame, (head['x'], head['y']), 3, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(frame, (head['x'], head['y']), 5, (255, 255, 255), -1, cv2.LINE_AA)
+                # เพิ่มวงแหวนรอบหัวไม้
+                cv2.circle(frame, (head['x'], head['y']), 8, (255, 200, 255), 1, cv2.LINE_AA)
+        
         return frame
 
 
@@ -450,6 +482,7 @@ hold_counter     = 0
 msg              = "WAITING..."
 has_moved_enough = False
 active_effects   = []
+draw_start_time  = 0
 
 # ===== Wand Trail =====
 wand_trail = WandTrail()
@@ -502,7 +535,12 @@ while True:
     else:
         is_holding = False
 
-    # STATE MACHINE
+# เพิ่มตัวแปรไว้เก็บจุดที่เริ่มง้าง (ไว้นอก Loop หรือก่อนเข้า State Machine)
+    # anchor_pt = None 
+
+    # ==========================================
+    # --- FIXED STATE MACHINE (START-ANCHOR SYSTEM) ---
+    # ==========================================
     if state == "IDLE":
         if is_holding: hold_counter += 1
         else:          hold_counter  = 0
@@ -512,39 +550,60 @@ while True:
             msg = "READY TO CAST!"
 
     elif state == "READY":
-        if not is_holding:
-            state = "DRAW"
-            pts.clear()
-            has_moved_enough = False
-            msg = "CASTING..."
+        if not is_holding: 
+            # เมื่อเลิก Hold ให้จำ "จุดสมอ" (Anchor) ไว้ก่อน แต่ยังไม่เริ่ม DRAW
+            anchor_pt = (px, py) if px is not None else None
+            state = "START_MOVING"
+            msg = "START MOVING..."
+
+    elif state == "START_MOVING":
+        if px is not None and anchor_pt is not None:
+            # คำนวณว่ามือขยับห่างจากจุดสมอเกิน 35 พิกเซลหรือยัง
+            dist_from_anchor = np.linalg.norm(np.array([px, py]) - np.array(anchor_pt))
+            
+            if dist_from_anchor > 35:
+                # ถ้าห่างพอแล้ว ถึงจะเริ่มเข้าสถานะ DRAW ของจริง
+                state = "DRAW"
+                pts.clear()
+                pts.append(anchor_pt) # ใส่จุดเริ่มเข้าไป
+                pts.append((px, py))  # ใส่จุดปัจจุบัน
+                draw_start_time = time.time()
+                has_moved_enough = False
+                msg = "DRAWING..."
+        
+        # ถ้าเผลอนิ่งนานเกินไปในขณะที่ยังง้างไม่เสร็จ ให้กลับไป IDLE
+        if is_holding: 
+            state = "IDLE"
 
     elif state == "DRAW":
+        elapsed = time.time() - draw_start_time
+        
         if len(valid_pts) > 1:
-            if np.linalg.norm(np.array(valid_pts[-1]) - np.array(valid_pts[0])) > 40:
+            # เช็คระยะลากรวม (จากจุดเริ่ม DRAW)
+            dist_total = np.linalg.norm(np.array(valid_pts[-1]) - np.array(valid_pts[0]))
+            if dist_total > 60:
                 has_moved_enough = True
-        if is_holding:
+
+        # ตัดสินใจเมื่อ "นิ่ง" หลังจากเริ่มวาดไปแล้วอย่างน้อย 0.6 วินาที
+        if is_holding and elapsed > 0.6:
             if has_moved_enough and len(valid_pts) > 20:
                 input_ai = preprocess_for_ai(valid_pts)
                 if input_ai:
                     prediction = ai_model.predict(np.array([input_ai]))[0]
                     confidence = np.max(ai_model.predict_proba(np.array([input_ai]))[0])
+                    
                     if confidence > 0.5:
                         center_pt = valid_pts[len(valid_pts)//2]
-                        if prediction == "Circle":
-                            active_effects.append(ButterflyEffect(center_pt))
-                        elif prediction == "Triangle":
-                            active_effects.append(PotionEffect(center_pt))
-                        elif prediction == "Slash":
-                            wand_now = (px, py) if px is not None else center_pt
-                            active_effects.append(FireballEffect(wand_now))
-                        msg = f"CAST: {prediction}! ({confidence:.0%})"
-                    else:
-                        msg = "UNCLEAR GESTURE"
+                        if prediction == "Circle": active_effects.append(ButterflyEffect(center_pt))
+                        elif prediction == "Triangle": active_effects.append(PotionEffect(center_pt))
+                        elif prediction == "Slash": active_effects.append(FireballEffect((px, py)))
+                        msg = f"SUCCESS: {prediction}!"
+                    else: msg = "UNCLEAR"
             else:
                 msg = "TOO SHORT!"
-            state        = "IDLE"
-            hold_counter = 0
-            pts.clear()
+            
+            state, hold_counter, pts = "IDLE", 0, deque(maxlen=64)
+            history.clear()
 
     # --- อัพเดท wand position ให้ PotionEffect ---
     wand_pos = (px, py) if px is not None else None
