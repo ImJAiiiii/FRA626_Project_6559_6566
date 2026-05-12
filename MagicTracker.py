@@ -105,31 +105,6 @@ class Sparkle:
         self.x = x + random.randint(-5, 5)
         self.y = y + random.randint(-5, 5)
         self.size = random.uniform(1, 3)
-        self.color = (random.randint(200, 255), random.randint(200, 255), 255)
-        self.life = 1.0
-        self.vx = random.uniform(-1, 1)
-        self.vy = random.uniform(-1, 1)
-
-    def update(self):
-        self.x += self.vx
-        self.y += self.vy
-        self.life -= 0.05
-
-    def draw(self, frame):
-        alpha = self.life
-        s = int(self.size * alpha * 2)
-        if s > 0:
-            ix, iy = int(self.x), int(self.y)
-            cv2.line(frame, (ix - s, iy), (ix + s, iy), self.color, 1)
-            cv2.line(frame, (ix, iy - s), (ix, iy + s), self.color, 1)
-
-
-class Sparkle:
-    """อนุภาควิงซ์ๆ ระยิบระยับ"""
-    def __init__(self, x, y):
-        self.x = x + random.randint(-5, 5)
-        self.y = y + random.randint(-5, 5)
-        self.size = random.uniform(1, 3)
         self.color = (random.randint(200, 255), random.randint(200, 255), 255) # สีขาว-ฟ้าสว่าง
         self.life = 1.0  # อายุขัย
         self.vx = random.uniform(-1, 1)
@@ -166,28 +141,27 @@ class WandTrail:
         pts_list = list(self.trail)
         if len(pts_list) < 2:
             return frame
-        overlay = frame.copy()
+        # OPT: bake alpha into color — no frame.copy() per segment
         for i in range(1, len(pts_list)):
             p  = pts_list[i]
             pp = pts_list[i - 1]
             if p['life'] <= 0:
                 continue
-            alpha = p['life']
-            b = int(255)
-            g = int(60  * alpha)
-            r = int(120 + 135 * (1 - alpha))
+            alpha = p['life'] * 0.75   # replicate the 0.75 blend weight
+            b = int(255 * alpha)
+            g = int(60  * alpha * alpha)
+            r = int((120 + 135 * (1 - alpha)) * alpha)
             color = (b, g, r)
-            thickness = max(1, int(alpha * 7))
-            cv2.line(overlay, (pp['x'], pp['y']), (p['x'], p['y']),
+            thickness = max(1, int(p['life'] * 7))
+            cv2.line(frame, (pp['x'], pp['y']), (p['x'], p['y']),
                      color, thickness, cv2.LINE_AA)
-        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
         if pts_list:
             head = pts_list[-1]
             if head['life'] > 0.5:
-                for radius, alpha_layer in [(14, 0.18), (9, 0.35), (5, 0.7)]:
-                    glow = frame.copy()
-                    cv2.circle(glow, (head['x'], head['y']), radius, (255, 80, 220), -1, cv2.LINE_AA)
-                    cv2.addWeighted(glow, alpha_layer, frame, 1 - alpha_layer, 0, frame)
+                # OPT: bake glow alpha into color instead of frame.copy() per layer
+                for radius, a in [(14, 0.18), (9, 0.35), (5, 0.7)]:
+                    gc = (int(255 * a), int(80 * a), int(220 * a))
+                    cv2.circle(frame, (head['x'], head['y']), radius, gc, -1, cv2.LINE_AA)
                 cv2.circle(frame, (head['x'], head['y']), 3, (255, 255, 255), -1, cv2.LINE_AA)
         return frame
 
@@ -781,6 +755,11 @@ while True:
 
     elif state == "READY":
         if not is_holding:
+            release_counter += 1
+        else:
+            release_counter = 0   # wobble resets counter — must be a real release
+        if release_counter >= 6:
+            release_counter = 0
             state = "DRAW"
             pts.clear()
             has_moved_enough = False
@@ -796,8 +775,8 @@ while True:
 
                 if input_ai:
                     pred_probs = ai_model.predict_proba(np.array([input_ai]))[0]
-                    prediction = ai_model.predict(np.array([input_ai]))[0]
-                    confidence = np.max(ai_model.predict_proba(np.array([input_ai]))[0])
+                    confidence = float(np.max(pred_probs))
+                    prediction = ai_model.classes_[int(np.argmax(pred_probs))]
                     if confidence > 0.5:
                         center_pt = valid_pts[len(valid_pts)//2]
                         if prediction == "Circle":
@@ -814,6 +793,7 @@ while True:
                 msg = "TOO SHORT!"
             state        = "IDLE"
             hold_counter = 0
+            release_counter = 0
             pts.clear()
 
     # --- อัพเดท wand position ให้ PotionEffect ---
