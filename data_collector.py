@@ -9,10 +9,10 @@ csv_filename = "gesture_data.csv"
 if not os.path.exists(csv_filename):
     with open(csv_filename, mode='w', newline='') as f:
         writer = csv.writer(f)
-        header = ["label"] + [f"{axis}{i}" for i in range(30) for axis in ('x', 'y')]
+        header = ["label"] + [f"{axis}{i}" for i in range(100) for axis in ('x', 'y')]
         writer.writerow(header)
 
-def preprocess_points(points, num_points=30):
+def preprocess_points(points, num_points=100):
     if len(points) < 10:
         return None
 
@@ -44,12 +44,27 @@ def preprocess_points(points, num_points=30):
     return out
 
 def save_to_csv(label, pts):
-    data = preprocess_points(pts)
-    if data:
-        with open(csv_filename, 'a', newline='') as f:
-            csv.writer(f).writerow([label] + data)
-        return True
-    return False
+    # รายชื่อจำนวนจุดที่เราต้องการทดลอง
+    test_points_list = [10, 20, 30, 50, 80, 100]
+    
+    for n in test_points_list:
+        data = preprocess_points(pts, num_points=n)
+        if data:
+            filename = f"gesture_data_{n}.csv"
+            file_exists = os.path.exists(filename)
+            
+            with open(filename, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                # ถ้ายังไม่มีไฟล์ ให้เขียน Header ก่อน (x0, y0, x1, y1...)
+                if not file_exists:
+                    header = ["label"] + [f"{axis}{i}" for i in range(n) for axis in ('x', 'y')]
+                    writer.writerow(header)
+                
+                # บันทึกข้อมูลลงไฟล์
+                writer.writerow([label] + data)
+    
+    print(f"Saved {label} to all {len(test_points_list)} files.")
+    return True
 
 
 # ===== CAMERA =====
