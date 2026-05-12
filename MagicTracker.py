@@ -5,6 +5,136 @@ import pickle
 import time
 import os
 import random
+import pygame
+
+# ==========================================
+# SOUND SYSTEM
+# ==========================================
+pygame.mixer.pre_init(44100, -16, 2, 512)
+pygame.mixer.init()
+pygame.mixer.set_num_channels(8)   # เปิด 8 channel พร้อมกัน
+
+SOUND_DIR = "sound"
+
+def load_sound(filename):
+    path = os.path.join(SOUND_DIR, filename)
+    try:
+        sound = pygame.mixer.Sound(path)
+        print(f"Sound loaded: {filename}")
+        return sound
+    except Exception as e:
+        print(f"Sound NOT loaded ({filename}): {e}")
+        return None
+
+snd_fairy_dust    = load_sound("fairy_dust.mp3")
+snd_butterfly     = load_sound("butterflysound.mp3")
+snd_firecharge    = load_sound("firecharge.mp3")
+snd_fireexplosion = load_sound("fireexplosion.mp3")
+snd_potion        = load_sound("potionsound.mp3")
+
+# ==========================================
+# SOUND MANAGER
+# ==========================================
+# จองช่องตายตัวให้แต่ละประเภท:
+#   CH 0 — fairy_dust   (priority ต่ำสุด, โดนแทนทีหลัง)
+#   CH 1 — butterfly
+#   CH 2 — firecharge + fireexplosion (ผูกด้วยกัน ไม่ตัดกันเอง)
+#   CH 3 — potion
+#   CH 4-7 — สำรอง (ถ้า effect เดียวกัน spawn ซ้ำพร้อมกัน)
+#
+# Logic การเล่น:
+#   1. ลองใช้ channel หลักของ sound นั้นก่อน
+#   2. ถ้า channel หลักยังไม่ว่าง → ค้นหา channel สำรอง (4-7) ที่ว่าง
+#   3. ถ้าสำรองเต็มหมด → แทนที่ channel priority ต่ำสุด (fairy_dust ก่อน)
+
+CH_FAIRY     = pygame.mixer.Channel(0)
+CH_BUTTERFLY = pygame.mixer.Channel(1)
+CH_FIRE      = pygame.mixer.Channel(2)   # ใช้ร่วมกันระหว่าง charge+explode
+CH_POTION    = pygame.mixer.Channel(3)
+CH_SPARE     = [pygame.mixer.Channel(i) for i in range(4, 8)]
+
+# map เสียง → channel หลัก + priority (ยิ่งสูง = สำคัญกว่า, โดนแทนที่ทีหลัง)
+_SOUND_META = {
+    "fairy":     {"ch": CH_FAIRY,     "priority": 1},
+    "butterfly": {"ch": CH_BUTTERFLY, "priority": 3},
+    "fire":      {"ch": CH_FIRE,      "priority": 4},  # charge & explode ใช้ key เดียวกัน
+    "potion":    {"ch": CH_POTION,    "priority": 3},
+}
+
+# ติดตามว่า channel สำรองแต่ละช่องเล่น priority อะไรอยู่ (เพื่อแทนที่ถูกต้อง)
+_spare_priority = [0] * len(CH_SPARE)
+
+def _play_on_channel(ch, sound, priority, spare_fallback=True):
+    """เล่น sound บน channel ที่กำหนด
+    ถ้า channel ไม่ว่าง ให้หา spare channel
+    ถ้า spare เต็ม ให้แทนที่ channel priority ต่ำสุด"""
+    if sound is None:
+        return
+
+    if not ch.get_busy():
+        # channel หลักว่าง — เล่นได้เลย
+        ch.play(sound)
+        return
+
+    if spare_fallback:
+        # หา spare channel ที่ว่าง
+        for i, sp in enumerate(CH_SPARE):
+            if not sp.get_busy():
+                sp.play(sound)
+                _spare_priority[i] = priority
+                return
+
+        # spare เต็มหมด → แทนที่ spare ที่ priority ต่ำสุด
+        min_idx = int(np.argmin(_spare_priority))
+        CH_SPARE[min_idx].stop()
+        CH_SPARE[min_idx].play(sound)
+        _spare_priority[min_idx] = priority
+
+    # ถ้า spare_fallback=False (เช่น fairy) ก็แค่ข้ามไปเลย ไม่แย่งใคร
+
+# ========== ฟังก์ชัน play สาธารณะ ==========
+
+_last_fairy_time = 0.0
+_fairy_interval  = 0.8  # วินาที
+
+def any_effect_playing():
+    """ตรวจว่ามี effect (butterfly/fire/potion) เล่นอยู่ไหม"""
+    return CH_BUTTERFLY.get_busy() or CH_FIRE.get_busy() or CH_POTION.get_busy()
+
+def play_fairy_dust():
+    """เล่น fairy_dust เป็นระยะๆ — หยุดทันทีถ้ามี effect เล่นอยู่"""
+    global _last_fairy_time
+    if snd_fairy_dust is None:
+        return
+    # มี effect เล่นอยู่ → หยุด fairy แล้วออกไปเลย
+    if any_effect_playing():
+        if CH_FAIRY.get_busy():
+            CH_FAIRY.stop()
+        return
+    now = time.time()
+    if now - _last_fairy_time >= _fairy_interval:
+        _last_fairy_time = now
+        _play_on_channel(CH_FAIRY, snd_fairy_dust, priority=1, spare_fallback=False)
+
+def play_butterfly():
+    _play_on_channel(CH_BUTTERFLY, snd_butterfly, priority=3)
+
+def play_firecharge():
+    """เริ่ม charge — หยุด explode เก่าในช่องไฟก่อน (ถ้ามี) แล้วเล่น charge"""
+    if snd_firecharge is None:
+        return
+    CH_FIRE.stop()
+    CH_FIRE.play(snd_firecharge)
+
+def play_fireexplosion():
+    """ระเบิด — หยุด charge แล้วเล่น explosion ในช่องเดิม"""
+    if snd_fireexplosion is None:
+        return
+    CH_FIRE.stop()
+    CH_FIRE.play(snd_fireexplosion)
+
+def play_potion():
+    _play_on_channel(CH_POTION, snd_potion, priority=3)
 
 # ==========================================
 # PART 1: โหลด Sprite Frames
@@ -140,6 +270,8 @@ class WandTrail:
             # สุ่มสร้างวิงซ์ๆ ออกมาเมื่อขยับไม้
             if random.random() > 0.3: # ไม่ต้องออกทุกเฟรมเดี๋ยวรก
                 self.sparkles.append(Sparkle(px, py))
+            # เล่นเสียง fairy_dust เมื่อขยับไม้
+            play_fairy_dust()
 
         # อัพเดทวิงซ์ๆ
         for s in self.sparkles:
@@ -300,6 +432,9 @@ class ButterflyEffect:
             for _ in range(60)
         ]
 
+        # เล่นเสียงผีเสื้อทันทีที่ spawn
+        play_butterfly()
+
     def draw(self, frame):
         now     = time.time()
         elapsed = now - self.start_time
@@ -342,7 +477,10 @@ class ButterflyEffect:
         return frame
 
     def is_done(self):
-        return time.time() - self.start_time > self.duration
+        done = time.time() - self.start_time > self.duration
+        if done and CH_BUTTERFLY.get_busy():
+            CH_BUTTERFLY.stop()
+        return done
 
 
 class FireballEffect:
@@ -352,12 +490,16 @@ class FireballEffect:
         self.anim_timer = time.time()
         self.frame_idx  = 0
         self.phase      = "charge"
+        self._explode_sound_played = False  # ป้องกันเสียงระเบิดเล่นซ้ำ
 
         self.charge_fps  = 0.05
         self.explode_fps = 0.045
 
         total = len(frames_fire) * self.charge_fps + len(frames_fire_explode) * self.explode_fps
         self.duration = total
+
+        # เล่นเสียงชาร์จทันทีที่ spawn
+        play_firecharge()
 
     def draw(self, frame):
         now    = time.time()
@@ -370,6 +512,10 @@ class FireballEffect:
                 if self.frame_idx >= len(frames_fire):
                     self.phase     = "explode"
                     self.frame_idx = 0
+                    # เล่นเสียงระเบิดเมื่อเข้า phase explode
+                    if not self._explode_sound_played:
+                        play_fireexplosion()
+                        self._explode_sound_played = True
 
             if self.phase == "charge" and frames_fire:
                 t     = self.frame_idx / max(len(frames_fire) - 1, 1)
@@ -387,7 +533,13 @@ class FireballEffect:
         return frame
 
     def is_done(self):
-        return time.time() - self.start_time > self.duration
+        # จบจริงเมื่อ explode เล่นถึงเฟรมสุดท้ายแล้วเท่านั้น ไม่ใช้ time-based
+        done = (self.phase == "explode" and
+                self.frame_idx >= len(frames_fire_explode) - 1 and
+                time.time() - self.anim_timer > self.explode_fps * 3)
+        if done and CH_FIRE.get_busy():
+            CH_FIRE.stop()
+        return done
 
 
 class PotionEffect:
@@ -404,6 +556,9 @@ class PotionEffect:
         self.time_offset  = random.uniform(0, 2 * np.pi)
         self.fade_start   = 5.0
         self.fade_dur     = 1.0
+
+        # เล่นเสียง potion ทันทีที่ spawn
+        play_potion()
 
     def update_wand(self, wand_pos):
         if wand_pos is not None:
@@ -443,10 +598,10 @@ class PotionEffect:
         return frame
 
     def is_done(self):
-        return time.time() - self.start_time > self.duration
-
-# ==========================================
-# PART 4: UI Helper
+        done = time.time() - self.start_time > self.duration
+        if done and CH_POTION.get_busy():
+            CH_POTION.stop()
+        return done
 # ==========================================
 
 _tutorial_start = time.time()  # ใช้สำหรับ animate tutorial arrows
@@ -656,7 +811,7 @@ def preprocess_for_ai(points, num_points=30):
         normalized.extend([(x-min(xs))/scale, (y-min(ys))/scale])
     return normalized
 
-cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
 cv2.namedWindow("AI Magic Wand", cv2.WND_PROP_FULLSCREEN)
 cv2.setWindowProperty("AI Magic Wand", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -852,3 +1007,4 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+pygame.mixer.quit()
