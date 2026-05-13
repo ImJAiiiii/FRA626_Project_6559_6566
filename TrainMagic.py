@@ -9,7 +9,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 # 1. โหลดข้อมูล
-data = pd.read_csv('gesture_data_50.csv')
+data = pd.read_csv('gesture_data_20.csv')
 
 # แยก Label (ชื่อท่า) ออกจาก Features (พิกัด x, y)
 X = data.drop('label', axis=1)  # ข้อมูลพิกัด 60 คอลัมน์

@@ -5,6 +5,7 @@ import pickle
 import time
 import os
 import random
+import math
 import pygame
 
 # ==========================================
@@ -255,7 +256,8 @@ class Sparkle:
 class WandTrail:
     """Glow trail + วิ้งค์ระยิบระยับ"""
     def __init__(self):
-        self.trail = deque(maxlen=45)
+        self.trail    = deque(maxlen=45)
+        self.sparkles = []   # fix: was missing — caused AttributeError on first update()
 
     def update(self, px, py):
         # อัพเดท Trail หลัก
@@ -302,86 +304,85 @@ class WandTrail:
                     gc = (int(255 * a), int(80 * a), int(220 * a))
                     cv2.circle(frame, (head['x'], head['y']), radius, gc, -1, cv2.LINE_AA)
                 cv2.circle(frame, (head['x'], head['y']), 3, (255, 255, 255), -1, cv2.LINE_AA)
+        # fix: sparkles were updated every frame but never drawn
+        for sp in self.sparkles:
+            sp.draw(frame)
         return frame
 
 
 class FireflyParticle:
     """หิ่งห้อยตัวเดียว — กระจายเต็มจอ ลอยช้าๆ กระพริบ มีหางสั้น"""
     def __init__(self, duration):
-        angle      = random.uniform(0, 2 * math.pi)
-        speed      = random.uniform(0.4, 1.4)
-        self.x     = random.uniform(20, 620)
-        self.y     = random.uniform(20, 340)
-        # OPT: use math.cos/sin — faster than np for single floats
-        self.vx    = math.cos(angle) * speed
-        self.vy    = math.sin(angle) * speed
-        self.life  = 1.0
-        self.decay = 1.0 / (duration * 30)
-        self.blink = random.uniform(0, 2 * math.pi)
-        self.blink_speed = random.uniform(0.08, 0.18)
-        self.wobble = random.uniform(0, 2 * math.pi)
-        self.size  = random.uniform(2.0, 4.0)
-        self.trail = deque(maxlen=10)
-        self.color = (
-            random.randint(80, 140),
-            random.randint(200, 255),
-            random.randint(100, 200),
+        angle       = random.uniform(0, 2 * np.pi)
+        speed       = random.uniform(0.4, 1.4)
+        # spawn กระจายทั่วจอ
+        self.x      = random.uniform(20, 620)
+        self.y      = random.uniform(20, 340)
+        self.vx     = np.cos(angle) * speed
+        self.vy     = np.sin(angle) * speed
+        self.life   = 1.0
+        self.decay  = 1.0 / (duration * 30)
+        self.blink  = random.uniform(0, 2 * np.pi)
+        self.blink_speed  = random.uniform(0.08, 0.18)
+        self.wobble = random.uniform(0, 2 * np.pi)
+        self.size   = random.uniform(2.0, 4.0)
+        self.trail  = deque(maxlen=10)
+        # สี: เขียว-เหลือง หิ่งห้อย (BGR)
+        self.color  = (
+            random.randint(80, 140),   # B
+            random.randint(200, 255),  # G
+            random.randint(100, 200),  # R
         )
 
     def update(self):
-        self.blink  += self.blink_speed
-        self.wobble += 0.05
-        # OPT: math.sin/cos instead of np.sin/cos for scalars
-        self.vx += math.sin(self.wobble * 0.7) * 0.04
-        self.vy += math.cos(self.wobble * 0.5) * 0.04
-        self.vx *= 0.97
-        self.vy *= 0.97
-        self.x  += self.vx
-        self.y  += self.vy
+        self.blink   += self.blink_speed
+        self.wobble  += 0.05
+        self.vx      += np.sin(self.wobble * 0.7) * 0.04
+        self.vy      += np.cos(self.wobble * 0.5) * 0.04
+        self.vx      *= 0.97
+        self.vy      *= 0.97
+        self.x       += self.vx
+        self.y       += self.vy
         self.trail.append((int(self.x), int(self.y)))
-        self.life -= self.decay
-        if self.x < 5 or self.x > 635: self.vx *= -1
-        if self.y < 5 or self.y > 355: self.vy *= -1
+        self.life    -= self.decay
+        # กระเด้งขอบเต็มจอ
+        if self.x < 5 or self.x > 635:  self.vx *= -1
+        if self.y < 5 or self.y > 355:  self.vy *= -1
         self.x = max(5, min(635, self.x))
         self.y = max(5, min(355, self.y))
 
     def draw(self, frame):
-        # OPT: math.sin instead of np.sin for scalar
-        glow_val   = (math.sin(self.blink) * 0.5 + 0.5)
-        fade       = self.life ** 3
+        glow_val   = (np.sin(self.blink) * 0.5 + 0.5)
+        fade = self.life ** 3
         brightness = glow_val * fade
         if brightness < 0.05:
             return frame
 
-        # OPT: draw trail directly — no frame.copy() per segment
-        # Bake alpha into color instead of addWeighted (was 600 copies/frame for 60 fireflies)
+        # วาด trail
         trail_pts = list(self.trail)
         for i in range(1, len(trail_pts)):
             t = i / len(trail_pts)
             a = t * brightness * 0.4
-            dimmed = (
-                int(self.color[0] * a),
-                int(self.color[1] * a),
-                int(self.color[2] * a),
-            )
-            cv2.line(frame, trail_pts[i - 1], trail_pts[i],
-                     dimmed, max(1, int(self.size * t * 0.5)), cv2.LINE_AA)
+            overlay = frame.copy()
+            cv2.line(overlay, trail_pts[i-1], trail_pts[i],
+                     self.color, max(1, int(self.size * t * 0.5)), cv2.LINE_AA)
+            cv2.addWeighted(overlay, a, frame, 1 - a, 0, frame)
 
-        # glow รัศมีรอบตัว — OPT: skip frame.copy(), draw with dimmed color
+        # glow รัศมีรอบตัว
         glow_r = int(self.size * 4)
         if glow_r > 1:
-            g = brightness * 0.3
-            glow_color = (int(self.color[0] * g), int(self.color[1] * g), int(self.color[2] * g))
-            cv2.circle(frame, (int(self.x), int(self.y)), glow_r, glow_color, -1, cv2.LINE_AA)
+            glow_overlay = frame.copy()
+            cv2.circle(glow_overlay, (int(self.x), int(self.y)),
+                       glow_r, self.color, -1, cv2.LINE_AA)
+            cv2.addWeighted(glow_overlay, brightness * 0.3,
+                            frame, 1 - brightness * 0.3, 0, frame)
 
-        # จุดสว่างตรงกลาง — OPT: skip frame.copy(), scale color by brightness
-        dot_r = max(1, int(self.size * (0.5 + glow_val * 0.5)))
-        dot_color = (
-            int(self.color[0] * brightness),
-            int(self.color[1] * brightness),
-            int(self.color[2] * brightness),
-        )
-        cv2.circle(frame, (int(self.x), int(self.y)), dot_r, dot_color, -1, cv2.LINE_AA)
+        # จุดสว่างตรงกลาง
+        dot_overlay = frame.copy()
+        cv2.circle(dot_overlay, (int(self.x), int(self.y)),
+                   max(1, int(self.size * (0.5 + glow_val * 0.5))),
+                   self.color, -1, cv2.LINE_AA)
+        cv2.addWeighted(dot_overlay, brightness, frame, 1 - brightness, 0, frame)
 
         return frame
 
@@ -527,8 +528,9 @@ class FireballEffect:
 
         if self.phase == "explode" and frames_fire_explode:
             if now - self.anim_timer > self.explode_fps:
-                self.frame_idx  = min(self.frame_idx + 1, len(frames_fire_explode) - 1)
-                self.anim_timer = now
+                if self.frame_idx < len(frames_fire_explode) - 1:
+                    self.frame_idx += 1
+                    self.anim_timer = now  # only advance timer while there are frames left
             t     = self.frame_idx / max(len(frames_fire_explode) - 1, 1)
             scale = 2.2 + t * 0.5
             frame = overlay_png(frame, frames_fire_explode[self.frame_idx], cx, cy, scale=scale)
@@ -772,37 +774,37 @@ def draw_ui(frame, msg, state, hold_counter, TEST_MODE):
 
     return frame
 
-# ==========================================
-# PART 5: Charge Spark Effect
-# ==========================================
-
 def draw_charge_sparks(frame, px, py, charge):
-    """Spark burst that grows denser and wilder as charge (0.0–1.0) fills up."""
+    """เปลี่ยนเป็นประกายไฟสีเหลืองทองที่สว่างขึ้นเรื่อยๆ ตามการชาร์จ"""
     if px is None or py is None or charge <= 0:
         return frame
 
-    num_sparks  = int(4 + charge * 14)       # 4 sparks at start → 18 at full
-    max_len     = 10 + charge * 28            # sparks grow longer as charge builds
-    base_hue_b  = int(180 + charge * 75)      # blue channel shifts purple → white
-
+    num_sparks  = int(4 + charge * 14)       
+    max_len     = 10 + charge * 28            
+    
     for _ in range(num_sparks):
         angle  = random.uniform(0, 2 * math.pi)
         length = random.uniform(max_len * 0.4, max_len)
         x2     = int(px + math.cos(angle) * length)
         y2     = int(py + math.sin(angle) * length)
 
-        # Color: purple-blue tones, brightening toward white at full charge
-        b = min(255, base_hue_b + random.randint(0, 40))
-        g = min(255, int(100 * charge + random.randint(0, 60)))
-        r = min(255, int(160 + charge * 95))
-        color = (b, g, r)  # BGR
+        # ปรับค่าสีเป็นโทนเหลือง (BGR)
+        # Blue: น้อยๆ เพื่อให้คงความเหลือง
+        # Green: สูง (ประมาณ 180-255)
+        # Red: สูง (255)
+        b = int(20 + charge * 60) # เพิ่มน้ำเงินนิดหน่อยตอนชาร์จเต็มเพื่อให้ดูขาวนวลขึ้น
+        g = int(180 + charge * 75)
+        r = 255
+        color = (b, g, r) 
 
         cv2.line(frame, (px, py), (x2, y2), color, 1, cv2.LINE_AA)
 
-    # Bright core dot — grows slightly with charge
+    # วาดจุดแกนกลาง (Core) ให้เป็นสีเหลืองสว่าง/ขาว
     core_r = max(2, int(3 + charge * 4))
-    cv2.circle(frame, (px, py), core_r + 2, (int(180 * charge), int(100 * charge), 255), -1, cv2.LINE_AA)
-    cv2.circle(frame, (px, py), core_r,     (255, 255, 255), -1, cv2.LINE_AA)
+    # วาดวงนอกเป็นสีเหลืองเข้ม
+    cv2.circle(frame, (px, py), core_r + 2, (0, 200, 255), -1, cv2.LINE_AA)
+    # วาดวงในเป็นสีเหลืองอ่อนจนถึงขาว
+    cv2.circle(frame, (px, py), core_r, (150, 255, 255), -1, cv2.LINE_AA)
 
     return frame
 
@@ -818,7 +820,7 @@ except Exception:
     print("Error: Model file not found!")
     exit()
 
-def preprocess_for_ai(points, num_points=50):
+def preprocess_for_ai(points, num_points=20):
     """OPT: pure numpy instead of list comprehensions — faster resampling & normalization"""
     if len(points) < 15:
         return None
@@ -830,7 +832,10 @@ def preprocess_for_ai(points, num_points=50):
     normalized = ((resampled - mins) / scale).flatten()   # shape (100,)
     return normalized.tolist()
 
-cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Error: Cannot open camera!")
+    exit()
 
 cv2.namedWindow("AI Magic Wand", cv2.WND_PROP_FULLSCREEN)
 cv2.setWindowProperty("AI Magic Wand", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -905,7 +910,7 @@ while True:
     if state == "IDLE":
         if is_holding: hold_counter += 1
         else:          hold_counter  = 0
-        if hold_counter > 30:  # ~1 sec at 30fps (was 15 = ~0.5 sec)
+        if hold_counter >= 90:  # fix: was > 30 (~33%) but bar fills over 90 frames — now requires 100% charge
             state = "READY"
             pts.clear()
             msg = "READY TO CAST!"
@@ -915,43 +920,49 @@ while True:
             release_counter += 1
         else:
             release_counter = 0   # wobble resets counter — must be a real release
-        if release_counter >= 6:
+        if release_counter >= 10:
             release_counter = 0
             state = "DRAW"
             pts.clear()
             has_moved_enough = False
+            draw_start_time  = time.time()
             msg = "CASTING..."
 
     elif state == "DRAW":
         if len(valid_pts) > 1:
-            if np.linalg.norm(np.array(valid_pts[-1]) - np.array(valid_pts[0])) > 40:
+            if np.linalg.norm(np.array(valid_pts[-1]) - np.array(valid_pts[0])) > 30:
                 has_moved_enough = True
         if is_holding:
-            if has_moved_enough and len(valid_pts) > 20:
-                input_ai = preprocess_for_ai(valid_pts)
-
-                if input_ai:
-                    pred_probs = ai_model.predict_proba(np.array([input_ai]))[0]
-                    confidence = float(np.max(pred_probs))
-                    prediction = ai_model.classes_[int(np.argmax(pred_probs))]
-                    if confidence > 0.5:
-                        center_pt = valid_pts[len(valid_pts)//2]
-                        if prediction == "Circle":
-                            active_effects.append(ButterflyEffect(center_pt))
-                        elif prediction == "Triangle":
-                            active_effects.append(PotionEffect(center_pt))
-                        elif prediction == "Slash":
-                            wand_now = (px, py) if px is not None else center_pt
-                            active_effects.append(FireballEffect(wand_now))
-                        msg = f"CAST: {prediction}! ({confidence:.0%})"
+            elapsed_draw = time.time() - draw_start_time
+            if elapsed_draw < 0.8:
+                pass  # too early — don't judge yet, ignore brief wobble-stops
+            else:
+                if has_moved_enough and len(valid_pts) > 10:
+                    input_ai = preprocess_for_ai(valid_pts)
+                    if input_ai:
+                        pred_probs = ai_model.predict_proba(np.array([input_ai]))[0]
+                        confidence = float(np.max(pred_probs))
+                        prediction = ai_model.classes_[int(np.argmax(pred_probs))]
+                        if confidence > 0.5:
+                            center_pt = valid_pts[len(valid_pts)//2]
+                            if prediction == "Circle":
+                                active_effects.append(ButterflyEffect(center_pt))
+                            elif prediction == "Triangle":
+                                active_effects.append(PotionEffect(center_pt))
+                            elif prediction == "Slash":
+                                wand_now = (px, py) if px is not None else center_pt
+                                active_effects.append(FireballEffect(wand_now))
+                            msg = f"CAST: {prediction}! ({confidence:.0%})"
+                        else:
+                            msg = "UNCLEAR GESTURE"
                     else:
                         msg = "UNCLEAR GESTURE"
-            else:
-                msg = "TOO SHORT!"
-            state        = "IDLE"
-            hold_counter = 0
-            release_counter = 0
-            pts.clear()
+                else:
+                    msg = "TOO SHORT!"
+                state           = "IDLE"
+                hold_counter    = 0
+                release_counter = 0
+                pts.clear()
 
     # --- อัพเดท wand position ให้ PotionEffect ---
     wand_pos = (px, py) if px is not None else None
@@ -977,7 +988,7 @@ while True:
     if state == "DRAW":
         for i in range(1, len(pts)):
             alpha = i / len(pts)  # fade from dim to bright toward the tip
-            color = (int(255 * alpha), int(120 * alpha), int(220 * alpha))  # purple, BGR
+            color = (int(50 * alpha), int(215 * alpha), int(255 * alpha))
             cv2.line(frame, pts[i - 1], pts[i], color, 2, cv2.LINE_AA)
 
     # UI
